@@ -1,5 +1,5 @@
 // src/dungeon_crawler.gleam
-// A simple text-based dungeon crawler game
+// A playable text-based dungeon crawler game
 
 import gleam/dict
 import gleam/int
@@ -7,6 +7,10 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
+
+// Create a binding to Erlang's IO functions for getting user input
+@external(erlang, "io", "get_line")
+pub fn read_line(prompt: String) -> String
 
 // Types
 pub type Direction {
@@ -36,8 +40,8 @@ pub type Room {
 }
 
 pub type Player {
-  Player(String, Int, Int, List(Item), Int)
-  // name, health, max_health, inventory, current_room_id
+  Player(String, Int, Int, List(Item), Int, Item)
+  // name, health, max_health, inventory, current_room_id, equipped_weapon
 }
 
 pub type GameState {
@@ -144,7 +148,7 @@ pub fn create_game(player_name: String) -> #(GameState, GameWorld) {
     |> dict.insert(5, "Exit Key")
   // Exit room requires exit key
 
-  // Create player
+  // Create player with default weapon (fists)
   let player =
     Player(
       player_name,
@@ -156,6 +160,8 @@ pub fn create_game(player_name: String) -> #(GameState, GameWorld) {
       // inventory
       1,
       // starting in room 1
+      Weapon("Fists", 2),
+      // default weapon
     )
 
   // Create game state
@@ -186,7 +192,7 @@ pub fn get_room(world: GameWorld, room_id: Int) -> Room {
 // Helper function to get current room
 pub fn get_current_room(state: GameState, world: GameWorld) -> Room {
   let GameState(player, _, _) = state
-  let Player(_, _, _, _, current_room_id) = player
+  let Player(_, _, _, _, current_room_id, _) = player
   get_room(world, current_room_id)
 }
 
@@ -240,7 +246,14 @@ pub fn move_player(
   direction: Direction,
 ) -> #(GameState, GameWorld) {
   let GameState(player, game_over, won) = state
-  let Player(name, health, max_health, inventory, current_room_id) = player
+  let Player(
+    name,
+    health,
+    max_health,
+    inventory,
+    current_room_id,
+    equipped_weapon,
+  ) = player
 
   // Get available exits for the current room
   let room_exits = get_exits(world, current_room_id)
@@ -264,7 +277,14 @@ pub fn move_player(
             True -> {
               // Move to the room
               let new_player =
-                Player(name, health, max_health, inventory, target_room_id)
+                Player(
+                  name,
+                  health,
+                  max_health,
+                  inventory,
+                  target_room_id,
+                  equipped_weapon,
+                )
 
               // Check for win condition
               let new_won = target_room_id == 5
@@ -281,7 +301,14 @@ pub fn move_player(
         Error(Nil) -> {
           // No key required, move to the room
           let new_player =
-            Player(name, health, max_health, inventory, target_room_id)
+            Player(
+              name,
+              health,
+              max_health,
+              inventory,
+              target_room_id,
+              equipped_weapon,
+            )
           #(GameState(new_player, game_over, won), world)
         }
       }
@@ -300,7 +327,14 @@ pub fn pick_up_item(
   item_name: String,
 ) -> #(GameState, GameWorld) {
   let GameState(player, game_over, won) = state
-  let Player(name, health, max_health, inventory, current_room_id) = player
+  let Player(
+    name,
+    health,
+    max_health,
+    inventory,
+    current_room_id,
+    equipped_weapon,
+  ) = player
 
   let current_room = get_current_room(state, world)
   let Room(room_id, room_name, description, items) = current_room
@@ -334,10 +368,19 @@ pub fn pick_up_item(
           }
         })
 
+      io.println("You picked up the " <> item_name <> ".")
+
       let new_room = Room(room_id, room_name, description, new_items)
       let new_world = update_room(world, new_room)
       let new_player =
-        Player(name, health, max_health, new_inventory, current_room_id)
+        Player(
+          name,
+          health,
+          max_health,
+          new_inventory,
+          current_room_id,
+          equipped_weapon,
+        )
 
       #(GameState(new_player, game_over, won), new_world)
     }
@@ -354,7 +397,14 @@ pub fn use_item(
   item_name: String,
 ) -> #(GameState, GameWorld) {
   let GameState(player, game_over, won) = state
-  let Player(name, health, max_health, inventory, current_room_id) = player
+  let Player(
+    name,
+    health,
+    max_health,
+    inventory,
+    current_room_id,
+    equipped_weapon,
+  ) = player
 
   // Find the item in inventory
   let item_result =
@@ -379,8 +429,9 @@ pub fn use_item(
             <> int.to_string(damage)
             <> ")",
           )
-          // We don't track equipped weapons in this simplified version
-          #(state, world)
+          let new_player =
+            Player(name, health, max_health, inventory, current_room_id, item)
+          #(GameState(new_player, game_over, won), world)
         }
         Potion(potion_name, health_restore) -> {
           io.println(
@@ -403,7 +454,14 @@ pub fn use_item(
           // Restore health (up to max)
           let new_health = int.min(health + health_restore, max_health)
           let new_player =
-            Player(name, new_health, max_health, new_inventory, current_room_id)
+            Player(
+              name,
+              new_health,
+              max_health,
+              new_inventory,
+              current_room_id,
+              equipped_weapon,
+            )
 
           #(GameState(new_player, game_over, won), world)
         }
@@ -422,15 +480,25 @@ pub fn use_item(
 
 pub fn attack(state: GameState, world: GameWorld) -> #(GameState, GameWorld) {
   let GameState(player, game_over, won) = state
-  let Player(name, health, max_health, inventory, current_room_id) = player
+  let Player(
+    name,
+    health,
+    max_health,
+    inventory,
+    current_room_id,
+    equipped_weapon,
+  ) = player
 
   case get_enemy(world, current_room_id) {
     Ok(enemy) -> {
       let Enemy(enemy_name, enemy_health, enemy_damage) = enemy
 
-      // Calculate damage - in this simple version we'll just use a fixed value
-      let weapon_damage = 5
-      // Fixed damage for simplicity
+      // Calculate damage from equipped weapon
+      let weapon_damage = case equipped_weapon {
+        Weapon(_, damage) -> damage
+        _ -> 2
+        // Default damage if something goes wrong
+      }
 
       io.println(
         "You attack the "
@@ -473,7 +541,14 @@ pub fn attack(state: GameState, world: GameWorld) -> #(GameState, GameWorld) {
             True -> {
               io.println("You have been defeated!")
               let new_player =
-                Player(name, 0, max_health, inventory, current_room_id)
+                Player(
+                  name,
+                  0,
+                  max_health,
+                  inventory,
+                  current_room_id,
+                  equipped_weapon,
+                )
               #(GameState(new_player, True, won), new_world)
             }
             False -> {
@@ -484,6 +559,7 @@ pub fn attack(state: GameState, world: GameWorld) -> #(GameState, GameWorld) {
                   max_health,
                   inventory,
                   current_room_id,
+                  equipped_weapon,
                 )
               #(GameState(new_player, game_over, won), new_world)
             }
@@ -561,13 +637,22 @@ pub fn display_room(state: GameState, world: GameWorld) -> Nil {
 
 pub fn display_player(state: GameState) -> Nil {
   let GameState(player, _, _) = state
-  let Player(name, health, max_health, inventory, _) = player
+  let Player(name, health, max_health, inventory, _, equipped_weapon) = player
 
   io.println("\nPlayer Status:")
   io.println("Name: " <> name)
   io.println(
     "Health: " <> int.to_string(health) <> "/" <> int.to_string(max_health),
   )
+
+  // Display equipped weapon
+  case equipped_weapon {
+    Weapon(name, damage) ->
+      io.println(
+        "Weapon: " <> name <> " (Damage: " <> int.to_string(damage) <> ")",
+      )
+    _ -> io.println("Weapon: Unarmed (Damage: 2)")
+  }
 
   // Display inventory
   case inventory {
@@ -632,6 +717,10 @@ pub fn process_command(
       display_help()
       #(state, world)
     }
+    "" -> {
+      // Empty command, just continue
+      #(state, world)
+    }
     _ -> {
       // Handle commands with arguments
       case string.split(command, " ") {
@@ -654,27 +743,46 @@ pub fn process_command(
 
 // Main game loop using recursion
 pub fn game_loop(state: GameState, world: GameWorld) -> Nil {
-  // For demonstration, we'll use a fixed command sequence
-  // In a real application, you would use Erlang interop or compile to JavaScript
-  // to get user input
+  let GameState(_, game_over, won) = state
 
-  let demo_command = "look"
-  // This would be user input in a real game
-  io.print("\n> " <> demo_command <> "\n")
+  // Check for game end conditions first
+  case game_over, won {
+    True, _ -> {
+      io.println("\nGame Over!")
+      Nil
+    }
+    _, True -> {
+      io.println("\nCongratulations! You've escaped the dungeon!")
+      Nil
+    }
+    _, _ -> {
+      // Game continues - get player input
+      io.print("\n> ")
+      let input =
+        read_line("")
+        |> string.trim
 
-  // Since we can't get real input, just run one command and exit
-  let #(new_state, new_world) = process_command(state, world, demo_command)
-
-  // In a real game, this would check game status and continue the loop
-  io.println("\nThis is a demo. In a real game, the loop would continue...")
+      case string.lowercase(input) {
+        "quit" | "exit" -> {
+          io.println("Thanks for playing!")
+          Nil
+        }
+        _ -> {
+          let #(new_state, new_world) = process_command(state, world, input)
+          game_loop(new_state, new_world)
+        }
+      }
+    }
+  }
 }
 
 pub fn main() -> Nil {
-  io.println("Welcome to the Simple Dungeon Crawler!")
-  io.println("(Note: This is a simplified version that shows basic structure)")
+  io.println("Welcome to the Dungeon Crawler!")
+  io.println("What is your name, brave adventurer?")
 
-  // Use a hardcoded name since we can't get user input
-  let player_name = "Adventurer"
+  let player_name =
+    read_line("")
+    |> string.trim
 
   let #(initial_state, world) = create_game(player_name)
 
@@ -685,6 +793,4 @@ pub fn main() -> Nil {
 
   // Start the game loop
   game_loop(initial_state, world)
-
-  io.println("\nThank you for trying the Gleam Dungeon Crawler demo!")
 }
